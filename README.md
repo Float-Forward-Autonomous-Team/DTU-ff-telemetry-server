@@ -193,3 +193,33 @@ You should see:
 - Listener receiving the command and forwarding to "ESP32"
 
 ---
+# 🧭 Strategy Service (target power for the pilot)
+
+`src/strategy_service.py` reads the boat's telemetry from HiveMQ, works out the battery power the pilot
+should hold to finish the endurance race on the SOC reserve, and sends it on the existing downlink
+(`boat/message/power`, `{"powerMin": kW, "powerMax": kW}`), so the ESP32 and display need no change.
+The strategy itself is in `src/strategy_engine.py`: for now the Simple controller used in the 2026
+endurance race; the MPC is meant to plug in there as another controller.
+
+- `--mode shadow` (default): compute and log only. `--mode auto`: also publish to the boat.
+- Every step is logged to InfluxDB, measurement `strategy` (`--no-influx` to turn off).
+- A message on `boat/message/power` sent by anyone else (the downlink page) pauses auto mode for
+  `--override-pause-min` minutes.
+- No recommendation is given when the battery SOC is older than `--stale-s` seconds.
+
+Replay a recorded bridge log (no network):
+```bash
+python src/strategy_service.py --replay logtest_afternoonRace.txt \
+    --duration-min 30 --battery-wh 9979 --soc-reserve 5 --p-max-kw 25 --ramp-kw-per-s 1
+```
+
+Live, shadow mode, race starting now:
+```bash
+python src/strategy_service.py --race-start now --duration-min 60 \
+    --battery-wh 9979 --soc-reserve 5 --p-max-kw 25 --ramp-kw-per-s 1
+```
+
+Tests:
+```bash
+python -m unittest discover -s tests
+```
