@@ -198,28 +198,91 @@ You should see:
 `src/strategy_service.py` reads the boat's telemetry from HiveMQ, works out the battery power the pilot
 should hold to finish the endurance race on the SOC reserve, and sends it on the existing downlink
 (`boat/message/power`, `{"powerMin": kW, "powerMax": kW}`), so the ESP32 and display need no change.
-The strategy itself is in `src/strategy_engine.py`: for now the Simple controller used in the 2026
-endurance race; the MPC is meant to plug in there as another controller.
+The strategy itself is the strategy team's code in the **Strategy_EnduranceRace** repo (packages
+`strategy` and `boat`). `src/strategy_engine.py` feeds it the telemetry the same way that repo's
+`backend/live_controller.py` does, but from HiveMQ instead of InfluxDB queries. Nothing is copied, so
+pulling that repo updates the strategy. Its location is `STRATEGY_PATH` (in `config/.env` or
+`--strategy-path`), by default `../../Strategy_EnduranceRace` next to ff_server. It needs `numpy`
+and `scipy`.
 
+- `--controller instant` (default): `instant_values.recommend`, the energy above the reserve spread
+  over the time left, plus the matching speed and an ABOVE / ON TARGET / BELOW status.
+- `--controller mpc`: Seg-MPC. One calibration lap at the average power, then each lap it learns the
+  disturbance per track segment (`ThrustKalman`, `LapAlphaHistory`) and re-plans the power per
+  segment (`endurance_mpc_solve`). Track: `--seg-lengths`, `--lap-len-m` (default from the boat config).
+- Boat data comes from `config/boat_2026.json` (from the 2026 Mechanical Final Report and the July
+  race data): 10 kWh, 3 h, 5 % reserve, 24 kW, 318 kg, measured efficiency 0.37 and per-speed
+  `eta_grid`, pre-race plan 3167 W / 4.91 m/s, 600 m lap in 4 segments. The mass and `eta_grid`
+  are also loaded into the strategy repo's physical model. Any option on the command line wins
+  (`--eta`, `--mass-kg`, `--v-opt`, `--p-opt-kw`, `--battery-wh`, ...); `--boat-config ''` uses
+  the strategy repo's own values.
+- The SOC used is the **lowest pack's**, because the motor needs both packs (2026 endurance: back
+  6 min early with one pack at 1.8 % and the other at 11 %).
+- `--speed-unit ms` (default; the 2026 boat sends m/s) or `kmh` (the repo's 2025 CSVs).
+- `--use-loadcell`: give `thrust/loadcell_n` to the thrust Kalman filter. Off until the load cell
+  is calibrated. `--accel-source imu` uses the IMU batch `ax` (m/s², x forward, gravity included)
+  instead of dv/dt. Not the default: underway the boat trims ~1.6° nose up, so `ax` reads
+  ~0.3 m/s² high (~94 N in the disturbance estimate), and the GPS pitch can't correct it.
 - `--mode shadow` (default): compute and log only. `--mode auto`: also publish to the boat.
-- Every step is logged to InfluxDB, measurement `strategy` (`--no-influx` to turn off).
+- Every step is logged to InfluxDB, measurement `strategy`, including the speed target, status and
+  the Seg-MPC state (`--no-influx` to turn off).
 - A message on `boat/message/power` sent by anyone else (the downlink page) pauses auto mode for
   `--override-pause-min` minutes.
 - No recommendation is given when the battery SOC is older than `--stale-s` seconds.
 
 Replay a recorded bridge log (no network):
 ```bash
-python src/strategy_service.py --replay logtest_afternoonRace.txt \
-    --duration-min 30 --battery-wh 9979 --soc-reserve 5 --p-max-kw 25 --ramp-kw-per-s 1
+python src/strategy_service.py --replay logtest_afternoonRace.txt --duration-min 30 --controller mpc
 ```
 
 Live, shadow mode, race starting now:
 ```bash
-python src/strategy_service.py --race-start now --duration-min 60 \
-    --battery-wh 9979 --soc-reserve 5 --p-max-kw 25 --ramp-kw-per-s 1
+python src/strategy_service.py --race-start now --controller instant
 ```
 
-Tests:
+Tests (need the Strategy_EnduranceRace repo, numpy and scipy):
 ```bash
 python -m unittest discover -s tests
 ```
+
+## What changed (13 Nov 2026)
+
+**Strategy: from our Simple controller to the strategy team's code**
+- `src/strategy_engine.py` no longer has its own `SimpleController`. It imports `strategy` and `boat`
+  from Strategy_EnduranceRace and runs them as `backend/live_controller.py` does (`instant` or `mpc`),
+  with telemetry from HiveMQ. MQTT, downlink, shadow/auto, override pause, stale check, InfluxDB
+  logging and replay are unchanged.
+- Differences from `live_controller.py`, on purpose: speed in m/s (the 2026 boat; their code divides
+  by 3.6 for the 2025 CSVs), load cell off by default, acceleration from dv/dt by default, and after
+  a restart the power ramp starts from the measured power instead of 0.
+- The SOC used is the lowest pack's, not the mean.
+- New options: `--controller`, `--strategy-path`, `--boat-config`, `--eta`, `--mass-kg`, `--v-opt`,
+  `--p-opt-kw`, `--seg-lengths`, `--lap-len-m`, `--speed-unit`, `--use-loadcell`, `--accel-source`.
+  `--ramp-kw-per-s` now defaults to 0.8 (their value). `--duration-min`, `--battery-wh`,
+  `--soc-reserve` and `--p-max-kw` are no longer required: they come from the boat config.
+- InfluxDB `strategy` also logs the speed target, statuses, `soc_mean` and the Seg-MPC state (lap,
+  segment, disturbance, per-segment targets).
+- `requirements.txt`: added `numpy`, `scipy`.
+- `tests/test_strategy_engine.py` rewritten for the new controllers, the boat config and the
+  lowest-pack SOC (17 tests).
+
+**Boat data from the 2026 reports** (Mechanical Final Report Spring 2026, DTU Float Forward 02-09-2026)
+- New `config/boat_2026.json`: 10 kWh, 3 h race, 5 % reserve, 24 kW, 318 kg, efficiency 0.37,
+  `eta_grid` 0.24–0.41 (measured from the July race data; was 0.38–0.76), pre-race plan
+  3167 W / 4.91 m/s, 600 m lap as 267 / 33 / 267 / 33 m.
+- The same values were written into Strategy_EnduranceRace, with the old values kept as comments
+  (not committed there): `boat/physical_model.py` (`eta_grid`, `M_BOAT`),
+  `strategy/instant_values.py` (`PRERACE`), `boat/dynamics.py` (`E_nom`, `eta_sys`),
+  `backend/live_controller.py` (`LiveParams` defaults), `backend/main.py` (`LiveStartRequest`
+  defaults, new `ENDURANCE_2026_SEG_LENGTHS`).
+- Effect on the 10 July endurance replay: the disturbance estimate's median went from 179 N to 7 N.
+
+**Other files**
+- `STRATEGY_IMPROVEMENTS.md`: what is left to improve, and the plan for tuning in simulation and
+  checking on the water.
+- `src/mqtt_subscriber_real_test.py` (separate change, from the IMU test): the IMU handler is
+  switched back on and writes `imu_*` fields.
+
+**Still open:** the ShipFlow resistance table (needs the sea-trial phases), the uneven Seg-MPC plan
+(keep `--controller mpc` in shadow mode), and the race length (the report says 3 h; the July
+telemetry shows about 3.5 h of racing).

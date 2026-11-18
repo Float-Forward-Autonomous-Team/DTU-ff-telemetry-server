@@ -1,0 +1,15 @@
+{
+  "_source": "Mechanical Final Report Spring 2026 (3.8), DTU Float Forward 02-09-2026 presentation, July 2026 CAN race data",
+  "battery_wh": 10000,
+  "soc_reserve_pct": 5,
+  "race_duration_min": 180,
+  "p_max_kw": 24,
+  "mass_kg": 318,
+  "eta": 0.37,
+  "eta_grid": [0.24, 0.34, 0.33, 0.37, 0.41, 0.35, 0.39, 0.35, 0.30, 0.29],
+  "_eta_grid_note": "total propulsive efficiency at the ShipFlow speeds 1.03..10.29 m/s: R_ShipFlow(v, 318 kg) * v / P_motor, median of the July 2026 race data",
+  "v_opt_mps": 4.91,
+  "p_opt_kw": 3.167,
+  "seg_lengths_m": [267, 33, 267, 33],
+  "_seg_note": "600 m endurance lap (71 laps), 2 straights + 2 turns; turns ~11 % of distance (yaw rate > 8 deg/s)"
+}

@@ -1,0 +1,305 @@
+{
+  "_source": "src/surge_model.py, after 'Data-driven parametrization of an energy-propulsive model for an electric racing vessel' (Oct 2026 draft)",
+  "_model": "P_motor [W] = a * u^b + c_turn * r^2 * u, u GPS speed [m/s], r yaw rate [rad/s]",
+  "law": "free",
+  "a": 179.03776541366946,
+  "b": 1.8,
+  "c_turn": 3567.687145617963,
+  "valid_u_range_mps": [
+    3.396628238073615,
+    5.6335154747161775
+  ],
+  "fit": {
+    "n_plateaus": 115,
+    "plateau_s": 4938.0,
+    "u_range_mps": [
+      3.396628238073615,
+      5.6335154747161775
+    ],
+    "cubic": {
+      "k": 26.41099036219181,
+      "c_turn": 14044.227899084388,
+      "k_se": 0.30300300621068,
+      "c_turn_se": 2745.1701605041626,
+      "r2": 0.6471391725458098,
+      "k_straight_only": 26.831681538454056
+    },
+    "free": {
+      "a": 179.03776541366946,
+      "b": 1.8,
+      "c_turn": 3567.687145617963,
+      "a_se": 1.1476705226892134,
+      "c_turn_se": 1566.5219598807828,
+      "r2": 0.88871823924801
+    },
+    "n_straight_plateaus": 99
+  },
+  "fit_days": [
+    "endurance"
+  ],
+  "test_days": [
+    "lapstest"
+  ],
+  "plateau_rule": {
+    "min_s": 30.0,
+    "tol_w": 300.0,
+    "tol_rel": 0.1,
+    "smooth_s": 5,
+    "p_min_w": 200.0,
+    "u_min_mps": 1.0,
+    "dt_s": 1.0,
+    "max_gap_s": 12.0
+  },
+  "battery": {
+    "pack_1": {
+      "R0_ohm": 0.00814433719166434,
+      "ocv_poly": [
+        42.53848552814344,
+        23.073921574176026,
+        -7.740884265608045,
+        -0.22453804847239933
+      ],
+      "ocv_poly_note": "OCV = c0 + c1*SOC + c2*SOC^2 + c3*SOC^3, SOC 0..1",
+      "rmse_v": 0.19076616132499433,
+      "n": 20055,
+      "max_current_a": 238.0,
+      "Q_eff_ah": 88.5043066072878,
+      "Q_eff_from": "telemetry_10_07_2026_endurance_race: 86.6 Ah for a 97.8 % SOC drop"
+    },
+    "pack_2": {
+      "R0_ohm": 0.008106208317861564,
+      "ocv_poly": [
+        42.25119810468206,
+        26.160453324537748,
+        -13.940804680706604,
+        3.6285396179755924
+      ],
+      "ocv_poly_note": "OCV = c0 + c1*SOC + c2*SOC^2 + c3*SOC^3, SOC 0..1",
+      "rmse_v": 0.18615380091945763,
+      "n": 20050,
+      "max_current_a": 238.9,
+      "Q_eff_ah": 95.77662932373248,
+      "Q_eff_from": "telemetry_10_07_2026_endurance_race: 86.7 Ah for a 90.5 % SOC drop"
+    }
+  },
+  "a_drift": {
+    "endurance": [
+      {
+        "k": 177.62774476669333,
+        "mean_soc_pct": 88.16512223925663
+      },
+      {
+        "k": 178.73925759641094,
+        "mean_soc_pct": 64.20019310323018
+      },
+      {
+        "k": 180.12633174693025,
+        "mean_soc_pct": 38.71081434498775
+      },
+      {
+        "k": 170.85780929082225,
+        "mean_soc_pct": 15.010922846215129
+      }
+    ]
+  },
+  "validation": {
+    "endurance": {
+      "role": "fit",
+      "new: cubic": {
+        "power": {
+          "rmse_w": 1452.2365717044904,
+          "bias_w": 316.7454918603005,
+          "energy_meas_mj": 30.943993142123883,
+          "energy_pred_mj": 34.250816077145416,
+          "range_error_pct": -9.65472743064969,
+          "n": 10440
+        },
+        "speed": {
+          "rmse_mps": 0.558015004415588,
+          "bias_mps": -0.1168993369252089,
+          "distance_meas_km": 47.922163461813604,
+          "distance_error_pct": -2.546690277185981
+        }
+      },
+      "new: cubic, no turn term": {
+        "power": {
+          "rmse_w": 799.3416100710834,
+          "bias_w": -296.85701030467715,
+          "energy_meas_mj": 30.943993142123883,
+          "energy_pred_mj": 27.84480595454305,
+          "range_error_pct": 11.130216502999835,
+          "n": 10440
+        },
+        "speed": {
+          "rmse_mps": 0.45396855669642133,
+          "bias_mps": 0.20366770313838273,
+          "distance_meas_km": 47.922163461813604,
+          "distance_error_pct": 4.436967505565614
+        }
+      },
+      "new: free": {
+        "power": {
+          "rmse_w": 435.88028769327013,
+          "bias_w": 3.9845757559169237,
+          "energy_meas_mj": 30.943993142123883,
+          "energy_pred_mj": 30.985592113015652,
+          "range_error_pct": -0.13425262534936255,
+          "n": 10440
+        },
+        "speed": {
+          "rmse_mps": 0.3149387473901964,
+          "bias_mps": -0.011101795946632706,
+          "distance_meas_km": 47.922163461813604,
+          "distance_error_pct": -0.24185625462257443
+        }
+      },
+      "new: free, no turn term": {
+        "power": {
+          "rmse_w": 604.6136040106971,
+          "bias_w": -151.89026301935883,
+          "energy_meas_mj": 30.943993142123883,
+          "energy_pred_mj": 29.358258796201774,
+          "range_error_pct": 5.4013228677147085,
+          "n": 10440
+        },
+        "speed": {
+          "rmse_mps": 0.4499232091458223,
+          "bias_mps": 0.13469885954475178,
+          "distance_meas_km": 47.922163461813604,
+          "distance_error_pct": 2.9344586973160336
+        }
+      },
+      "88 u^2.29 (strategy notes)": {
+        "power": {
+          "rmse_w": 669.8895474574007,
+          "bias_w": -15.168817807755843,
+          "energy_meas_mj": 30.943993142123883,
+          "energy_pred_mj": 30.78563068421091,
+          "range_error_pct": 0.5144038124065053,
+          "n": 10440
+        },
+        "speed": {
+          "rmse_mps": 0.4058003343910955,
+          "bias_mps": 0.024299609972347144,
+          "distance_meas_km": 47.922163461813604,
+          "distance_error_pct": 0.5293749484274413
+        }
+      },
+      "now: ShipFlow / eta_grid": {
+        "power": {
+          "rmse_w": 664.425307078492,
+          "bias_w": -345.2302856189597,
+          "energy_meas_mj": 30.943993142123883,
+          "energy_pred_mj": 27.33978896026194,
+          "range_error_pct": 13.18299928028197,
+          "n": 10440
+        },
+        "speed": {
+          "rmse_mps": 0.5186439445692476,
+          "bias_mps": 0.3042383658005965,
+          "distance_meas_km": 47.922163461813604,
+          "distance_error_pct": 6.6279322749883685
+        }
+      }
+    },
+    "lapstest": {
+      "role": "blind",
+      "new: cubic": {
+        "power": {
+          "rmse_w": 731.9897557066911,
+          "bias_w": 33.8759025978425,
+          "energy_meas_mj": 8.286266674614483,
+          "energy_pred_mj": 8.428172830596846,
+          "range_error_pct": -1.6837119840162784,
+          "n": 4189
+        },
+        "speed": {
+          "rmse_mps": 0.37909383713418965,
+          "bias_mps": 0.05548602033262978,
+          "distance_meas_km": 16.53951754754646,
+          "distance_error_pct": 1.4053066451618967
+        }
+      },
+      "new: cubic, no turn term": {
+        "power": {
+          "rmse_w": 507.38355185603666,
+          "bias_w": -96.12500376641778,
+          "energy_meas_mj": 8.286266674614483,
+          "energy_pred_mj": 7.883599033836959,
+          "range_error_pct": 5.107662617660358,
+          "n": 4189
+        },
+        "speed": {
+          "rmse_mps": 0.40344422262380203,
+          "bias_mps": 0.1488932985484724,
+          "distance_meas_km": 16.53951754754646,
+          "distance_error_pct": 3.771053332278562
+        }
+      },
+      "new: free": {
+        "power": {
+          "rmse_w": 431.9317709527117,
+          "bias_w": 263.3812527101129,
+          "energy_meas_mj": 8.286266674614483,
+          "energy_pred_mj": 9.389570742217145,
+          "range_error_pct": -11.750314235793724,
+          "n": 4189
+        },
+        "speed": {
+          "rmse_mps": 0.42909211186420904,
+          "bias_mps": -0.28681089385308534,
+          "distance_meas_km": 16.53951754754646,
+          "distance_error_pct": -7.264122613593438
+        }
+      },
+      "new: free, no turn term": {
+        "power": {
+          "rmse_w": 432.1316129985121,
+          "bias_w": 230.35682688285232,
+          "energy_meas_mj": 8.286266674614483,
+          "energy_pred_mj": 9.25123142242675,
+          "range_error_pct": -10.430662727483064,
+          "n": 4189
+        },
+        "speed": {
+          "rmse_mps": 0.44131061795823334,
+          "bias_mps": -0.25327783283253663,
+          "distance_meas_km": 16.53951754754646,
+          "distance_error_pct": -6.41482339908327
+        }
+      },
+      "88 u^2.29 (strategy notes)": {
+        "power": {
+          "rmse_w": 507.42721322335245,
+          "bias_w": 231.21735267341717,
+          "energy_meas_mj": 8.286266674614483,
+          "energy_pred_mj": 9.254836164963429,
+          "range_error_pct": -10.46554982805331,
+          "n": 4189
+        },
+        "speed": {
+          "rmse_mps": 0.383838425456733,
+          "bias_mps": -0.16654373269107797,
+          "distance_meas_km": 16.53951754754646,
+          "distance_error_pct": -4.218089761308786
+        }
+      },
+      "now: ShipFlow / eta_grid": {
+        "power": {
+          "rmse_w": 357.3905569239695,
+          "bias_w": 70.0046031717102,
+          "energy_meas_mj": 8.286266674614483,
+          "energy_pred_mj": 8.579515957300776,
+          "range_error_pct": -3.4180166357374975,
+          "n": 4189
+        },
+        "speed": {
+          "rmse_mps": 0.3807631987913172,
+          "bias_mps": -0.07595810570703246,
+          "distance_meas_km": 16.53951754754646,
+          "distance_error_pct": -1.9238076557678174
+        }
+      }
+    }
+  }
+}

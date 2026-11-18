@@ -1,8 +1,10 @@
 """
 Strategy service: recommends a battery power to the pilot during the endurance race.
 
-Reads the boat's telemetry straight from HiveMQ (boat/telemetry/#), runs the strategy in
-strategy_engine.py every --dt seconds, and in auto mode publishes the recommendation on
+Reads the boat's telemetry straight from HiveMQ (boat/telemetry/#), runs the strategy
+team's controller (Strategy_EnduranceRace, through strategy_engine.py) every --dt
+seconds: --controller instant (default) or mpc (Seg-MPC). In auto mode it publishes the
+recommendation on
 the existing downlink topic (boat/message/power, {"powerMin": kW, "powerMax": kW}, QoS 1),
 so the ESP32 and the pilot display need no change.
 
@@ -15,13 +17,14 @@ In both modes every step is written to InfluxDB (measurement "strategy") unless 
 A message on the downlink topic that this service didn't send (someone used the downlink
 page) pauses auto mode for --override-pause-min minutes, so the operator always wins.
 
+The boat data (battery, race length, power limit, mass, efficiency, pre-race plan, lap
+segments) comes from config/boat_2026.json; any option given on the command line wins.
+
 Replay a recorded bridge log instead of listening to HiveMQ (no network used):
-  python src/strategy_service.py --replay logtest_afternoonRace.txt \
-      --duration-min 30 --battery-wh 5000 --soc-reserve 5 --p-max-kw 10
+  python src/strategy_service.py --replay logtest_afternoonRace.txt --duration-min 30 --controller mpc
 
 Live, shadow mode, race starting now:
-  python src/strategy_service.py --race-start now --duration-min 60 \
-      --battery-wh 5000 --soc-reserve 5 --p-max-kw 10
+  python src/strategy_service.py --race-start now
 """
 
 import argparse
@@ -32,7 +35,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from strategy_engine import RaceConfig, StrategyEngine, TelemetryState, load_log, payload_text
+from strategy_engine import (DEFAULT_BOAT_CONFIG, MONACO_SEG_LENGTHS, RaceConfig, StrategyEngine,
+                             TelemetryState, load_boat_config, load_log, payload_text)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = BASE_DIR / "config" / ".env"
@@ -48,9 +52,17 @@ def describe(rec) -> str:
     p_batt = f"{i['p_batt'] / 1000:.2f}kW" if "p_batt" in i else "-"
     if not rec.ok:
         return f"{fmt_time(rec.t)}  no recommendation ({rec.reason})  soc={soc} p_batt={p_batt}"
-    return (f"{fmt_time(rec.t)}  {rec.controller:<6}  target {rec.p_w / 1000:6.2f} kW "
-            f"[{rec.p_min_w / 1000:.2f}-{rec.p_max_w / 1000:.2f}]  soc={soc} p_batt={p_batt} "
+    info = rec.info
+    speed = f"{i['speed']:.2f}" if "speed" in i else "-"
+    text = (f"{fmt_time(rec.t)}  {rec.controller:<7}  target {rec.p_w / 1000:6.2f} kW "
+            f"[{rec.p_min_w / 1000:.2f}-{rec.p_max_w / 1000:.2f}]  "
+            f"v={speed}->{info['v_rec_mps']:.2f}m/s speed {info['speed_status']}, "
+            f"power {info['power_status']}  soc={soc} p_batt={p_batt} "
             f"left={rec.t_left_s / 60:.1f}min")
+    if "laps" in info:
+        text += (f"  lap={info['laps']} seg={info['seg']} D={info['D_hat_n']:.0f}N"
+                 + (" calib" if info["is_calib"] else ""))
+    return text
 
 
 def parse_start(value: str) -> float:
@@ -64,18 +76,68 @@ def parse_start(value: str) -> float:
     return t.timestamp()
 
 
+# option -> key in config/boat_2026.json
+BOAT_KEYS = {"duration_min": "race_duration_min", "battery_wh": "battery_wh",
+             "soc_reserve": "soc_reserve_pct", "p_max_kw": "p_max_kw", "eta": "eta",
+             "mass_kg": "mass_kg", "v_opt": "v_opt_mps", "p_opt_kw": "p_opt_kw",
+             "seg_lengths": "seg_lengths_m"}
+FALLBACK = {"eta": 0.35, "mass_kg": 315.0,
+            "seg_lengths": ",".join(str(x) for x in MONACO_SEG_LENGTHS)}
+
+
+def fill_from_boat(args, ap):
+    """Options not given on the command line come from the boat config, then FALLBACK."""
+    args.boat = load_boat_config(args.boat_config)
+    if args.surge_model:
+        # the power curve fitted by src/surge_model.py replaces eta_grid inside its speed range
+        args.boat["surge"] = json.loads(Path(args.surge_model).read_text())
+    for opt, key in BOAT_KEYS.items():
+        if getattr(args, opt) is None and key in args.boat:
+            value = args.boat[key]
+            if isinstance(value, list):
+                value = ",".join(str(x) for x in value)
+            setattr(args, opt, value)
+        if getattr(args, opt) is None and opt in FALLBACK:
+            setattr(args, opt, FALLBACK[opt])
+    missing = [f"--{o.replace('_', '-')}" for o in ("duration_min", "battery_wh", "soc_reserve",
+                                                    "p_max_kw") if getattr(args, o) is None]
+    if missing:
+        ap.error(f"missing {', '.join(missing)} (not in {args.boat_config or 'any boat config'})")
+
+
 def make_config(args, start: float) -> RaceConfig:
+    seg_lengths = tuple(float(x) for x in str(args.seg_lengths).split(","))
     return RaceConfig(
         start=start,
         duration_s=args.duration_min * 60,
         battery_wh=args.battery_wh,
         soc_reserve=args.soc_reserve / 100,
         p_max_w=args.p_max_kw * 1000,
+        mode=args.controller,
         ramp_w_per_s=args.ramp_kw_per_s * 1000,
         band_w=args.band_kw * 1000,
         stale_s=args.stale_s,
         packs=tuple(int(p) for p in args.packs.split(",")),
+        eta=args.eta,
+        mass_kg=args.mass_kg,
+        v_opt_mps=args.v_opt,
+        p_opt_w=args.p_opt_kw * 1000 if args.p_opt_kw is not None else None,
+        lap_len_m=args.lap_len_m or sum(seg_lengths),
+        seg_lengths_m=seg_lengths,
+        speed_to_mps=1 / 3.6 if args.speed_unit == "kmh" else 1.0,
+        use_loadcell=args.use_loadcell,
+        accel_source=args.accel_source,
+        strategy_path=args.strategy_path,
+        boat=args.boat,
     )
+
+
+def print_setup(engine, cfg, args):
+    print(f"Strategy code: {engine.team['path']}, controller {cfg.mode}")
+    print(f"Boat: {args.boat_config or 'strategy repo defaults'}; battery {cfg.battery_wh:.0f} Wh, "
+          f"{cfg.duration_s / 60:.0f} min, reserve {100 * cfg.soc_reserve:.0f} %, "
+          f"P_max {cfg.p_max_w / 1000:.0f} kW, mass {cfg.mass_kg:.0f} kg, eta {cfg.eta}, "
+          f"lap {cfg.lap_len_m:.0f} m {list(cfg.seg_lengths_m)}")
 
 
 # ==========================
@@ -91,6 +153,7 @@ def replay(args):
     state = TelemetryState()
     engine = StrategyEngine(cfg, state)
 
+    print_setup(engine, cfg, args)
     print(f"Replaying {len(records)} records from {args.replay}, "
           f"{fmt_time(records[0][0])} -> {fmt_time(records[-1][0])}")
 
@@ -147,6 +210,8 @@ def live(args):
                 p.field("reason", rec.reason)
             for key, value in rec.inputs.items():
                 p.field(f"in_{key}", float(value))
+            for key, value in rec.info.items():
+                p.field(key, value if isinstance(value, str) else float(value))
             try:
                 write_api.write(bucket=bucket, org=org, record=p)
             except Exception as e:
@@ -183,6 +248,7 @@ def live(args):
     client.connect(os.getenv("HIVEMQ_HOST"), int(os.getenv("HIVEMQ_PORT", "8883")))
     client.loop_start()
 
+    print_setup(engine, cfg, args)
     print(f"Mode {args.mode}; race {fmt_time(cfg.start)} + {args.duration_min} min")
     last_pub_t, last_pub_w = 0.0, None
     try:
@@ -216,14 +282,38 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     race = ap.add_argument_group("race")
     race.add_argument("--race-start", help="'now', ISO time, or HH:MM local (replay: first record)")
-    race.add_argument("--duration-min", type=float, required=True)
-    race.add_argument("--battery-wh", type=float, required=True, help="all packs together at 100 %% SOC")
-    race.add_argument("--soc-reserve", type=float, required=True, help="SOC %% to keep at the finish")
-    race.add_argument("--p-max-kw", type=float, required=True)
-    race.add_argument("--ramp-kw-per-s", type=float, default=0.0, help="0 = no ramp limit")
+    race.add_argument("--boat-config", default=str(DEFAULT_BOAT_CONFIG),
+                      help="boat data JSON; '' = none (then the strategy repo's own values)")
+    race.add_argument("--duration-min", type=float)
+    race.add_argument("--battery-wh", type=float, help="all packs together at 100 %% SOC")
+    race.add_argument("--soc-reserve", type=float, help="SOC %% to keep at the finish (lowest pack)")
+    race.add_argument("--p-max-kw", type=float)
+    race.add_argument("--ramp-kw-per-s", type=float, default=0.8,
+                      help="power slew limit (strategy repo default 0.8); 0 = none")
     race.add_argument("--band-kw", type=float, default=0.5, help="half-width of the range sent to the pilot")
     race.add_argument("--packs", default="1,2", help="battery/<n> groups of the main battery")
     race.add_argument("--stale-s", type=float, default=10.0, help="ignore inputs older than this")
+
+    strat = ap.add_argument_group("strategy (Strategy_EnduranceRace)")
+    strat.add_argument("--controller", choices=["instant", "mpc"], default="instant")
+    strat.add_argument("--strategy-path", help="Strategy_EnduranceRace folder "
+                       "(default $STRATEGY_PATH, else ../../Strategy_EnduranceRace)")
+    strat.add_argument("--surge-model", default="",
+                       help="power curve fitted from telemetry (config/surge_model_2026.json, made by "
+                            "src/surge_model.py); replaces eta_grid inside its speed range. Off by default")
+    strat.add_argument("--eta", type=float, help="electrical -> useful power")
+    strat.add_argument("--mass-kg", type=float)
+    strat.add_argument("--v-opt", type=float, help="pre-race optimal speed, m/s (default: PRERACE)")
+    strat.add_argument("--p-opt-kw", type=float, help="pre-race optimal power (default: PRERACE)")
+    strat.add_argument("--seg-lengths",
+                       help="Seg-MPC segment lengths in m, comma-separated")
+    strat.add_argument("--lap-len-m", type=float, help="default: sum of --seg-lengths")
+    strat.add_argument("--speed-unit", choices=["ms", "kmh"], default="ms",
+                       help="unit of gps speed in the telemetry (2026 boat: m/s)")
+    strat.add_argument("--use-loadcell", action="store_true",
+                       help="feed thrust/loadcell_n to the thrust Kalman filter (calibrate first)")
+    strat.add_argument("--accel-source", choices=["speed", "imu"], default="speed",
+                       help="longitudinal acceleration for the disturbance estimate")
 
     run = ap.add_argument_group("run")
     run.add_argument("--mode", choices=["shadow", "auto"], default="shadow")
@@ -236,6 +326,7 @@ def main():
     run.add_argument("--replay", help="bridge log to replay instead of listening to HiveMQ")
     run.add_argument("--replay-day", default="2000-01-01", help="date for logs without ts")
     args = ap.parse_args()
+    fill_from_boat(args, ap)
 
     # print each line at once, also when the output goes to a file or a service log
     sys.stdout.reconfigure(line_buffering=True)
