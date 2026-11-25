@@ -336,61 +336,86 @@ def handle_dht(data: dict):
     log("dht", format_data(data))
 
 
-'''def handle_imu_batch(payload: str):
-    try:
-        imu_data = json.loads(payload)
+IMU_KEYS = ("ax", "ay", "az", "gx", "gy", "gz")
 
-        samples = imu_data.get("samples", [])
-        count = imu_data.get("count", 0)
 
-        if count != len(samples):
-            log_warn("IMU count mismatch")
-            return
+def imu_samples(data: dict):
+    """The batch's samples as a list of {"t":..,"ax":..,...} dicts, from either form:
 
-        base_time = parse_ts(imu_data)
-        base_t_boot = samples[0]["t"] if samples and "t" in samples[0] else None
+    - arrays:  {"t":[0,10,...],"ax":[...],...,"gz":[...]}  (one array per key, sample i
+      is element i of each; what the ESP32 sends since 17 Nov 2026, about half the size)
+    - objects: {"samples":[{"t":0,"ax":..,...},...]}
 
-        points = []
-        required_keys = {"t", "ax", "ay", "az", "gx", "gy", "gz"}
+    None if neither is there, or the arrays don't all have the same length.
+    """
+    if "samples" in data:
+        samples = data["samples"]
+        return samples if isinstance(samples, list) and samples else None
 
-        for sample in samples:
-            if not required_keys.issubset(sample):
-                log_warn("Invalid IMU sample keys")
-                continue
+    columns = [data.get(key) for key in ("t", *IMU_KEYS)]
+    if not all(isinstance(c, list) for c in columns) or not columns[0]:
+        return None
+    if len({len(c) for c in columns}) != 1:
+        return None
+    return [dict(zip(("t", *IMU_KEYS), row)) for row in zip(*columns)]
 
-            p = (
-                Point("imu")
-                .tag("object", "boat")
-                .field("ax", float(sample["ax"]))
-                .field("ay", float(sample["ay"]))
-                .field("az", float(sample["az"]))
-                .field("gx", float(sample["gx"]))
-                .field("gy", float(sample["gy"]))
-                .field("gz", float(sample["gz"]))
-                .field("t_boot_ms", int(sample["t"]))
-            )
 
-            # Each sample shares the batch's "ts", so offset by this
-            # sample's own boot-relative "t" to give every point a
-            # distinct, correctly-ordered timestamp. Without this,
-            # all samples in the batch would land on the same
-            # timestamp and overwrite each other in InfluxDB.
-            if base_time is not None and base_t_boot is not None:
-                offset_ms = int(sample["t"]) - int(base_t_boot)
-                p.time(base_time + timedelta(milliseconds=offset_ms), WritePrecision.NS)
+def handle_imu_batch(data: dict):
+    """One point per IMU sample, as imu_<key> fields of the telemetry measurement.
 
-            points.append(p)
+    "ts" is the time of the first sample; each sample's "t" is in ms, and
+    t - t[0] is its offset from "ts" (works whether "t" counts from
+    "ts" or from boot). The ESP32 takes the IMU samples with the same clock as
+    the other groups, and every 10th sample has exactly the time of a 100 ms
+    telemetry tick, so those IMU fields land on the same row as that tick's
+    motor/thrust/... fields. See imu_samples() for the two payload forms.
 
-        write_api.write(
-            bucket=INFLUXDB_BUCKET,
-            org=INFLUXDB_ORG,
-            record=points,
-        )
+    A batch without "ts" is not written: without it every sample would get the
+    time InfluxDB receives it, and the samples of a batch would overwrite each
+    other.
+    """
+    samples = imu_samples(data)
 
-        log("imu/batch", f"{len(points)} samples")
+    if samples is None:
+        log_warn("IMU batch without samples (or arrays of different lengths)")
+        return
 
-    except Exception as e:
-        log_warn(f"Invalid IMU batch: {e}")'''
+    if "count" in data and int(data["count"]) != len(samples):
+        log_warn(f"IMU count mismatch: count={data['count']}, {len(samples)} samples")
+        return
+
+    base_time = parse_ts(data)
+    if base_time is None:
+        log_warn("IMU batch without a valid ts: not written")
+        return
+
+    if not isinstance(samples[0], dict) or "t" not in samples[0]:
+        log_warn("IMU batch: first sample has no t")
+        return
+
+    t0 = int(samples[0]["t"])
+    required = {"t", *IMU_KEYS}
+    points = []
+
+    for sample in samples:
+        if not isinstance(sample, dict) or not required.issubset(sample):
+            log_warn(f"Invalid IMU sample: {sample}")
+            continue
+
+        p = Point("telemetry").tag("object", "boat")
+        for key in IMU_KEYS:
+            p.field(f"imu_{key}", float(sample[key]))
+        p.time(base_time + timedelta(milliseconds=int(sample["t"]) - t0), WritePrecision.NS)
+        points.append(p)
+
+    write_api.write(
+        bucket=INFLUXDB_BUCKET,
+        org=INFLUXDB_ORG,
+        record=points,
+    )
+
+    extra = f" seq={data['seq']}" if "seq" in data else ""
+    log("imu/batch", f"{len(points)} samples{extra} ts={data['ts']}")
 
 
 def handle_battery_fault(topic_key: str, payload: str):
@@ -437,10 +462,6 @@ def on_message(client, userdata, msg):
         handle_battery_fault(topic_key, payload)
         return
 
-    '''if topic_key == "imu/batch":
-        handle_imu_batch(payload)
-        return'''
-
     data = parse_payload(payload)
     if data is None:
         log_warn(f"Invalid JSON on {topic_key}: {payload}")
@@ -467,6 +488,9 @@ def on_message(client, userdata, msg):
 
         elif topic_key == "dht":
             handle_dht(data)
+
+        elif topic_key == "imu/batch":
+            handle_imu_batch(data)
 
     except KeyError as e:
         log_warn(f"Missing key in {topic_key}: {e}")
